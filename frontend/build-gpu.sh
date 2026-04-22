@@ -14,13 +14,6 @@ NC='\033[0m' # No Color
 echo -e "${BLUE}🚀 Meetily GPU-Accelerated Build Script${NC}"
 echo ""
 
-# Export CUDA flags for Linux/NVIDIA
-if [[ "$OSTYPE" == "linux-gnu"* ]]; then
-    export CMAKE_CUDA_ARCHITECTURES=75
-    export CMAKE_CUDA_STANDARD=17
-    export CMAKE_POSITION_INDEPENDENT_CODE=ON
-fi
-
 # Detect OS
 if [[ "$OSTYPE" == "darwin"* ]]; then
   OS="macos"
@@ -66,23 +59,27 @@ else
 fi
 
 # Detect GPU feature if not already set
-if [ -z "$TAURI_GPU_FEATURE" ]; then
+if [ -z "${TAURI_GPU_FEATURE+x}" ]; then
     echo -e "${BLUE}🔍 Detecting GPU features...${NC}"
     # Run the detection script and capture output
     # We need to run it from frontend dir
     if [ "$FRONTEND_DIR" != "." ]; then
         cd "$FRONTEND_DIR"
     fi
-    
+
     TAURI_GPU_FEATURE=$(node scripts/auto-detect-gpu.js)
-    
+
     if [ "$FRONTEND_DIR" != "." ]; then
         cd ..
     fi
 fi
 
-if [ -n "$TAURI_GPU_FEATURE" ]; then
-    echo -e "${GREEN}✅ Detected GPU feature: $TAURI_GPU_FEATURE${NC}"
+if [ -n "${TAURI_GPU_FEATURE+x}" ]; then
+    if [ -n "$TAURI_GPU_FEATURE" ] && [ "$TAURI_GPU_FEATURE" != "none" ]; then
+        echo -e "${GREEN}✅ Detected GPU feature: $TAURI_GPU_FEATURE${NC}"
+    else
+        echo -e "${YELLOW}⚠️ CPU-only mode requested explicitly${NC}"
+    fi
     export TAURI_GPU_FEATURE
 else
     echo -e "${YELLOW}⚠️ No specific GPU feature detected or forced${NC}"

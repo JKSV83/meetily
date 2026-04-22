@@ -18,10 +18,15 @@ if (!command || !['dev', 'build'].includes(command)) {
 // Detect GPU feature
 let feature = '';
 
-// Check for environment variable override first
-if (process.env.TAURI_GPU_FEATURE) {
+// Check for environment variable override first, including explicit CPU-only empty string.
+const hasFeatureOverride = Object.prototype.hasOwnProperty.call(process.env, 'TAURI_GPU_FEATURE');
+if (hasFeatureOverride) {
   feature = process.env.TAURI_GPU_FEATURE;
-  console.log(`🔧 Using forced GPU feature from environment: ${feature}`);
+  if (feature) {
+    console.log(`🔧 Using forced GPU feature from environment: ${feature}`);
+  } else {
+    console.log('🔧 Using forced CPU-only mode from environment');
+  }
 } else {
   try {
     const result = execSync('node scripts/auto-detect-gpu.js', {
@@ -36,15 +41,51 @@ if (process.env.TAURI_GPU_FEATURE) {
 
 console.log(''); // Empty line for spacing
 
+function getCudaArchitectures() {
+  const existing = process.env.CMAKE_CUDA_ARCHITECTURES || process.env.CUDA_ARCHITECTURES;
+  if (existing) {
+    return existing;
+  }
+
+  try {
+    const raw = execSync('nvidia-smi --query-gpu=compute_cap --format=csv,noheader', {
+      encoding: 'utf8',
+      stdio: ['pipe', 'pipe', 'pipe']
+    }).trim();
+
+    const caps = [...new Set(raw.split(/\r?\n/)
+      .map(line => line.trim())
+      .filter(Boolean)
+      .map(line => {
+        const match = line.match(/^(\d+)\.(\d+)$/);
+        if (!match) {
+          return null;
+        }
+
+        return `${match[1]}${match[2]}`;
+      })
+      .filter(Boolean))];
+
+    if (caps.length > 0) {
+      return caps.join(';');
+    }
+  } catch {
+    // Fall through to the broad default list below.
+  }
+
+  return '61;70;75;80;86;89;90';
+}
+
 // Platform-specific environment variables
 const platform = os.platform();
 const env = { ...process.env };
 
 if (platform === 'linux' && feature === 'cuda') {
-  console.log('🐧 Linux/CUDA detected: Setting CMAKE flags for NVIDIA GPU');
-  env.CMAKE_CUDA_ARCHITECTURES = '75';
-  env.CMAKE_CUDA_STANDARD = '17';
-  env.CMAKE_POSITION_INDEPENDENT_CODE = 'ON';
+  const cudaArchitectures = getCudaArchitectures();
+  env.CMAKE_CUDA_ARCHITECTURES = cudaArchitectures;
+  env.CMAKE_CUDA_STANDARD = env.CMAKE_CUDA_STANDARD || '17';
+  env.CMAKE_POSITION_INDEPENDENT_CODE = env.CMAKE_POSITION_INDEPENDENT_CODE || 'ON';
+  console.log(`🐧 Linux/CUDA detected: using CMAKE_CUDA_ARCHITECTURES=${cudaArchitectures}`);
 }
 
 // Build the tauri command
