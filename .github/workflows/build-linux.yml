@@ -33,7 +33,7 @@ on:
         description: 'Sign the build'
         required: true
         type: boolean
-        default: true
+        default: false
       upload-artifacts:
         description: 'Upload build artifacts'
         required: true
@@ -88,22 +88,19 @@ jobs:
           # Determine bundle arguments
           BUNDLE_TYPE="${{ github.event.inputs.bundle-type }}"
           if [[ "$BUNDLE_TYPE" == "all" ]] || [[ -z "$BUNDLE_TYPE" ]]; then
-            # Default based on Ubuntu version
-            if [[ "${{ github.event.inputs.ubuntu-version }}" == "ubuntu-24.04" ]]; then
-              BUNDLES="appimage,rpm"
-            else
-              BUNDLES="deb"
-            fi
+            BUNDLES="deb,appimage"
           else
             BUNDLES="$BUNDLE_TYPE"
           fi
 
+          EXTRA_ARGS="--bundles $BUNDLES"
           if [[ "${{ github.event.inputs.build-type }}" == "debug" ]]; then
-            echo "args=--debug --bundles $BUNDLES" >> "$GITHUB_OUTPUT"
-          else
-            echo "args=--bundles $BUNDLES" >> "$GITHUB_OUTPUT"
+            EXTRA_ARGS="--debug $EXTRA_ARGS"
           fi
+
+          echo "args=$EXTRA_ARGS" >> "$GITHUB_OUTPUT"
           echo "Bundle types: $BUNDLES"
+          echo "Build args: $EXTRA_ARGS"
 
       - name: Setup pnpm
         uses: pnpm/action-setup@v4
@@ -188,23 +185,29 @@ jobs:
 
       - name: Build llama-helper sidecar
         run: |
-          echo "Building llama-helper sidecar (CPU mode)..."
-          cargo build --release -p llama-helper
-          
-          # Copy binary to binaries directory
-          mkdir -p frontend/src-tauri/binaries
-          cp target/release/llama-helper frontend/src-tauri/binaries/llama-helper-x86_64-unknown-linux-gnu
-          
-          echo "Copied llama-helper to frontend/src-tauri/binaries/"
+          chmod +x frontend/scripts/prepare-llama-helper-sidecar.sh
+          TAURI_GPU_FEATURE=openblas frontend/scripts/prepare-llama-helper-sidecar.sh release
           ls -la frontend/src-tauri/binaries/
+
+      - name: Disable updater artifacts for unsigned builds
+        if: github.event.inputs.sign-build != 'true'
+        run: |
+          node <<'NODE'
+          const fs = require('fs');
+          const path = 'frontend/src-tauri/tauri.conf.json';
+          const config = JSON.parse(fs.readFileSync(path, 'utf8'));
+          config.bundle = config.bundle || {};
+          config.bundle.createUpdaterArtifacts = false;
+          fs.writeFileSync(path, JSON.stringify(config, null, 4) + '\n');
+          console.log('Disabled updater artifacts for unsigned build');
+          NODE
 
       - name: Build Tauri app
         uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          # Tauri updater signing (ALWAYS enabled for .sig files)
-          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
-          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ github.event.inputs.sign-build == 'true' && secrets.TAURI_SIGNING_PRIVATE_KEY || '' }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ github.event.inputs.sign-build == 'true' && secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD || '' }}
           # License validation RSA public key (embedded at build time)
           MEETILY_RSA_PUBLIC_KEY: ${{ secrets.MEETILY_RSA_PUBLIC_KEY }}
           # Supabase configuration (for online license verification)
