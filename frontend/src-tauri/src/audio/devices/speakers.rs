@@ -1,8 +1,8 @@
 use anyhow::{anyhow, Result};
-use cpal::traits::{HostTrait, DeviceTrait};
+use cpal::traits::{DeviceTrait, HostTrait};
 use log::{info, warn};
 
-use super::configuration::{AudioDevice, DeviceType};
+use super::configuration::{linux_system_audio_source_name, AudioDevice, DeviceType};
 
 /// Get the default output (speaker/system audio) device for the system
 pub fn default_output_device() -> Result<AudioDevice> {
@@ -35,7 +35,42 @@ pub fn default_output_device() -> Result<AudioDevice> {
         return Ok(AudioDevice::new(device.name()?, DeviceType::Output));
     }
 
-    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+    #[cfg(target_os = "linux")]
+    {
+        let host = cpal::default_host();
+        let mut fallback_candidate: Option<String> = None;
+
+        if let Ok(input_devices) = host.input_devices() {
+            for device in input_devices {
+                if let Ok(name) = device.name() {
+                    let lower = name.to_lowercase();
+                    if lower.contains("monitor") || lower.contains("loopback") {
+                        return Ok(AudioDevice::new(name, DeviceType::Output));
+                    }
+
+                    if fallback_candidate.is_none() && linux_system_audio_source_name(&name) {
+                        fallback_candidate = Some(name);
+                    }
+                }
+            }
+        }
+
+        if let Some(name) = fallback_candidate {
+            return Ok(AudioDevice::new(name, DeviceType::Output));
+        }
+
+        if let Some(device) = host.default_output_device() {
+            if let Ok(name) = device.name() {
+                if linux_system_audio_source_name(&name) {
+                    return Ok(AudioDevice::new(name, DeviceType::Output));
+                }
+            }
+        }
+
+        return Err(anyhow!("No usable system audio device found on Linux"));
+    }
+
+    #[cfg(not(any(target_os = "macos", target_os = "windows", target_os = "linux")))]
     {
         let host = cpal::default_host();
         let device = host
@@ -88,18 +123,20 @@ pub fn find_builtin_output_device() -> Result<Option<AudioDevice>> {
             for pattern in &builtin_patterns {
                 if name_lower.contains(pattern) {
                     // Additional filter: exclude Bluetooth/wireless devices
-                    if name_lower.contains("bluetooth") ||
-                       name_lower.contains("airpods") ||
-                       name_lower.contains("wireless") {
+                    if name_lower.contains("bluetooth")
+                        || name_lower.contains("airpods")
+                        || name_lower.contains("wireless")
+                    {
                         continue; // Skip Bluetooth devices
                     }
 
                     // Additional filter: exclude virtual audio devices
                     // (we want real hardware speakers for ScreenCaptureKit)
-                    if name_lower.contains("blackhole") ||
-                       name_lower.contains("vb-audio") ||
-                       name_lower.contains("virtual") ||
-                       name_lower.contains("loopback") {
+                    if name_lower.contains("blackhole")
+                        || name_lower.contains("vb-audio")
+                        || name_lower.contains("virtual")
+                        || name_lower.contains("loopback")
+                    {
                         continue; // Skip virtual devices
                     }
 
@@ -110,6 +147,9 @@ pub fn find_builtin_output_device() -> Result<Option<AudioDevice>> {
         }
     }
 
-    warn!("⚠️ No built-in speaker found (searched {} patterns)", builtin_patterns.len());
+    warn!(
+        "⚠️ No built-in speaker found (searched {} patterns)",
+        builtin_patterns.len()
+    );
     Ok(None)
 }
