@@ -1,16 +1,49 @@
 use anyhow::{anyhow, Result};
-use cpal::traits::{HostTrait, DeviceTrait};
+use cpal::traits::{DeviceTrait, HostTrait};
 use log::{info, warn};
 
-use super::configuration::{AudioDevice, DeviceType};
+use super::configuration::{linux_device_is_usable, AudioDevice, DeviceType};
 
 /// Get the default input (microphone) device for the system
 pub fn default_input_device() -> Result<AudioDevice> {
     let host = cpal::default_host();
-    let device = host
-        .default_input_device()
-        .ok_or_else(|| anyhow!("No default input device found"))?;
-    Ok(AudioDevice::new(device.name()?, DeviceType::Input))
+
+    #[cfg(target_os = "linux")]
+    {
+        if let Some(device) = host.default_input_device() {
+            if let Ok(name) = device.name() {
+                if linux_device_is_usable(&name) {
+                    return Ok(AudioDevice::new(name, DeviceType::Input));
+                }
+            }
+        }
+
+        if let Ok(input_devices) = host.input_devices() {
+            for device in input_devices {
+                if let Ok(name) = device.name() {
+                    if linux_device_is_usable(&name) {
+                        return Ok(AudioDevice::new(name, DeviceType::Input));
+                    }
+                }
+            }
+        }
+
+        if let Some(device) = host.default_input_device() {
+            if let Ok(name) = device.name() {
+                return Ok(AudioDevice::new(name, DeviceType::Input));
+            }
+        }
+
+        return Err(anyhow!("No usable default input device found on Linux"));
+    }
+
+    #[cfg(not(target_os = "linux"))]
+    {
+        let device = host
+            .default_input_device()
+            .ok_or_else(|| anyhow!("No default input device found"))?;
+        Ok(AudioDevice::new(device.name()?, DeviceType::Input))
+    }
 }
 
 /// Find the built-in microphone device (wired, stable, consistent sample rate)
@@ -49,9 +82,10 @@ pub fn find_builtin_input_device() -> Result<Option<AudioDevice>> {
             for pattern in &builtin_patterns {
                 if name_lower.contains(pattern) {
                     // Additional filter: exclude Bluetooth/wireless devices
-                    if name_lower.contains("bluetooth") ||
-                       name_lower.contains("airpods") ||
-                       name_lower.contains("wireless") {
+                    if name_lower.contains("bluetooth")
+                        || name_lower.contains("airpods")
+                        || name_lower.contains("wireless")
+                    {
                         continue; // Skip Bluetooth devices
                     }
 
@@ -62,6 +96,9 @@ pub fn find_builtin_input_device() -> Result<Option<AudioDevice>> {
         }
     }
 
-    warn!("⚠️ No built-in microphone found (searched {} patterns)", builtin_patterns.len());
+    warn!(
+        "⚠️ No built-in microphone found (searched {} patterns)",
+        builtin_patterns.len()
+    );
     Ok(None)
 }

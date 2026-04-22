@@ -13,6 +13,20 @@ lazy_static! {
     );
 }
 
+#[cfg(target_os = "linux")]
+const LINUX_RAW_DEVICE_PREFIXES: [&str; 10] = [
+    "default:",
+    "sysdefault:",
+    "front:",
+    "surround",
+    "iec958",
+    "hw:",
+    "plughw:",
+    "dmix:",
+    "dsnoop:",
+    "cards.pcm.",
+];
+
 #[derive(Clone, Debug, PartialEq)]
 pub enum AudioTranscriptionEngine {
     Deepgram,
@@ -102,6 +116,79 @@ impl fmt::Display for AudioDevice {
     }
 }
 
+#[cfg(target_os = "linux")]
+pub(crate) fn linux_device_is_raw_alias(name: &str) -> bool {
+    let lower = name.trim().to_lowercase();
+    if lower.is_empty() {
+        return false;
+    }
+
+    LINUX_RAW_DEVICE_PREFIXES
+        .iter()
+        .any(|prefix| lower.starts_with(prefix) || lower.contains(prefix))
+}
+
+#[cfg(not(target_os = "linux"))]
+pub(crate) fn linux_device_is_raw_alias(_name: &str) -> bool {
+    false
+}
+
+#[cfg(target_os = "linux")]
+pub(crate) fn linux_device_is_usable(name: &str) -> bool {
+    let lower = name.trim().to_lowercase();
+    if lower.is_empty() {
+        return false;
+    }
+
+    if matches!(lower.as_str(), "default") {
+        return true;
+    }
+
+    if lower.starts_with("pipewire")
+        || lower.contains("pulse")
+        || lower.contains("jack")
+        || lower.contains("monitor")
+        || lower.contains("loopback")
+    {
+        return true;
+    }
+
+    if linux_device_is_raw_alias(&lower) {
+        return false;
+    }
+
+    true
+}
+
+#[cfg(not(target_os = "linux"))]
+pub(crate) fn linux_device_is_usable(_name: &str) -> bool {
+    true
+}
+
+#[cfg(target_os = "linux")]
+pub(crate) fn linux_system_audio_source_name(name: &str) -> bool {
+    let lower = name.trim().to_lowercase();
+    if lower.is_empty() {
+        return false;
+    }
+
+    if linux_device_is_raw_alias(&lower) {
+        return false;
+    }
+
+    matches!(lower.as_str(), "default")
+        || lower.starts_with("pipewire")
+        || lower.contains("pulse")
+        || lower.contains("jack")
+        || lower.contains("monitor")
+        || lower.contains("loopback")
+}
+
+#[cfg(not(target_os = "linux"))]
+pub(crate) fn linux_system_audio_source_name(_name: &str) -> bool {
+    true
+}
+
 /// Parse audio device from string name
 pub fn parse_audio_device(name: &str) -> Result<AudioDevice> {
     AudioDevice::from_name(name)
@@ -127,9 +214,9 @@ pub async fn get_device_and_config(
                 for device in host.input_devices()? {
                     if let Ok(name) = device.name() {
                         if name == audio_device.name {
-                            let default_config = device
-                                .default_input_config()
-                                .map_err(|e| anyhow!("Failed to get default input config: {}", e))?;
+                            let default_config = device.default_input_config().map_err(|e| {
+                                anyhow!("Failed to get default input config: {}", e)
+                            })?;
                             return Ok((device, default_config));
                         }
                     }
@@ -154,16 +241,15 @@ pub async fn get_device_and_config(
 
                 #[cfg(target_os = "linux")]
                 {
-                    // For Linux, we use PulseAudio monitor sources for system audio
-                    if let Ok(pulse_host) = cpal::host_from_id(cpal::HostId::Alsa) {
-                        for device in pulse_host.input_devices()? {
-                            if let Ok(name) = device.name() {
-                                if name == audio_device.name {
-                                    let default_config = device
-                                        .default_input_config()
-                                        .map_err(|e| anyhow!("Failed to get default input config: {}", e))?;
-                                    return Ok((device, default_config));
-                                }
+                    // Linux system audio sources are exposed as input-capable monitor/loopback devices.
+                    for device in host.input_devices()? {
+                        if let Ok(name) = device.name() {
+                            if name == audio_device.name {
+                                let default_config =
+                                    device.default_input_config().map_err(|e| {
+                                        anyhow!("Failed to get default input config: {}", e)
+                                    })?;
+                                return Ok((device, default_config));
                             }
                         }
                     }
@@ -172,5 +258,72 @@ pub async fn get_device_and_config(
         }
 
         Err(anyhow!("Device not found: {}", audio_device.name))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn linux_filters_raw_alsa_aliases() {
+        for name in [
+            "default:CARD=Audio",
+            "sysdefault:CARD=Audio",
+            "front:CARD=Audio",
+            "surround51:CARD=Audio",
+            "iec958:CARD=Audio",
+            "hw:0,0",
+            "plughw:0,0",
+            "dmix:front",
+            "dsnoop:front",
+            "cards.pcm.hdmi",
+        ] {
+            assert!(
+                linux_device_is_raw_alias(name),
+                "expected raw alias to be rejected: {name}"
+            );
+            assert!(
+                !linux_device_is_usable(name),
+                "expected raw alias to be hidden: {name}"
+            );
+            assert!(
+                !linux_system_audio_source_name(name),
+                "expected raw alias to stay hidden from system audio: {name}"
+            );
+        }
+    }
+
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn linux_keeps_useful_logical_endpoints() {
+        for name in [
+            "default",
+            "pipewire",
+            "pulse",
+            "jack",
+            "alsa_output.pci-0000_00_1f.3.analog-stereo.monitor",
+        ] {
+            assert!(
+                linux_device_is_usable(name),
+                "expected logical endpoint to be kept: {name}"
+            );
+            assert!(
+                linux_system_audio_source_name(name),
+                "expected logical endpoint to be usable for system audio: {name}"
+            );
+        }
+
+        for name in [
+            "Built-in Audio Analog Stereo",
+            "USB Audio Device",
+            "Headset Mic",
+        ] {
+            assert!(
+                linux_device_is_usable(name),
+                "expected human-readable device to be kept: {name}"
+            );
+        }
     }
 }

@@ -1,9 +1,22 @@
 use anyhow::Result;
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use log::error;
+use std::collections::HashSet;
 
-use super::configuration::{AudioDevice, DeviceType};
+use super::configuration::{linux_device_is_usable, AudioDevice, DeviceType};
 use super::platform;
+
+fn push_unique_device(
+    devices: &mut Vec<AudioDevice>,
+    seen: &mut HashSet<(String, DeviceType)>,
+    name: String,
+    device_type: DeviceType,
+) {
+    let key = (name.clone(), device_type.clone());
+    if seen.insert(key) {
+        devices.push(AudioDevice::new(name, device_type));
+    }
+}
 
 /// List all available audio devices on the system
 pub async fn list_audio_devices() -> Result<Vec<AudioDevice>> {
@@ -27,12 +40,50 @@ pub async fn list_audio_devices() -> Result<Vec<AudioDevice>> {
         }
     };
 
+    #[cfg(target_os = "linux")]
+    {
+        // Linux already got the curated pass, keep fallback narrow so ALSA aliases
+        // do not get reintroduced into the picker.
+        if devices.is_empty() {
+            let mut seen: HashSet<(String, DeviceType)> = devices
+                .iter()
+                .map(|device| (device.name.clone(), device.device_type.clone()))
+                .collect();
+
+            if let Ok(input_devices) = host.input_devices() {
+                for device in input_devices {
+                    if let Ok(name) = device.name() {
+                        if linux_device_is_usable(&name) {
+                            push_unique_device(
+                                &mut devices,
+                                &mut seen,
+                                name.clone(),
+                                DeviceType::Input,
+                            );
+                        }
+
+                        if super::configuration::linux_system_audio_source_name(&name) {
+                            push_unique_device(&mut devices, &mut seen, name, DeviceType::Output);
+                        }
+                    }
+                }
+            }
+        }
+
+        return Ok(devices);
+    }
+
     // Add any additional devices from the default host
     if let Ok(other_devices) = host.devices() {
+        let mut seen: HashSet<(String, DeviceType)> = devices
+            .iter()
+            .map(|device| (device.name.clone(), device.device_type.clone()))
+            .collect();
+
         for device in other_devices {
             if let Ok(name) = device.name() {
-                if !devices.iter().any(|d| d.name == name) {
-                    devices.push(AudioDevice::new(name, DeviceType::Output));
+                if !seen.contains(&(name.clone(), DeviceType::Output)) {
+                    push_unique_device(&mut devices, &mut seen, name, DeviceType::Output);
                 }
             }
         }
@@ -81,7 +132,10 @@ pub fn trigger_audio_permission() -> Result<bool> {
 
     // Start the stream to actually trigger the permission dialog
     if let Err(e) = stream.play() {
-        info!("[trigger_audio_permission] Failed to play stream: {} - permission likely denied", e);
+        info!(
+            "[trigger_audio_permission] Failed to play stream: {} - permission likely denied",
+            e
+        );
         return Ok(false);
     }
 
