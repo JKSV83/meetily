@@ -127,9 +127,9 @@ pub async fn get_device_and_config(
                 for device in host.input_devices()? {
                     if let Ok(name) = device.name() {
                         if name == audio_device.name {
-                            let default_config = device
-                                .default_input_config()
-                                .map_err(|e| anyhow!("Failed to get default input config: {}", e))?;
+                            let default_config = device.default_input_config().map_err(|e| {
+                                anyhow!("Failed to get default input config: {}", e)
+                            })?;
                             return Ok((device, default_config));
                         }
                     }
@@ -154,19 +154,10 @@ pub async fn get_device_and_config(
 
                 #[cfg(target_os = "linux")]
                 {
-                    // For Linux, we use PulseAudio monitor sources for system audio
-                    if let Ok(pulse_host) = cpal::host_from_id(cpal::HostId::Alsa) {
-                        for device in pulse_host.input_devices()? {
-                            if let Ok(name) = device.name() {
-                                if name == audio_device.name {
-                                    let default_config = device
-                                        .default_input_config()
-                                        .map_err(|e| anyhow!("Failed to get default input config: {}", e))?;
-                                    return Ok((device, default_config));
-                                }
-                            }
-                        }
-                    }
+                    return Err(anyhow!(
+                        "Linux system audio capture uses the PulseAudio/PipeWire monitor-source backend, not CPAL device lookup, for device '{}'",
+                        audio_device.name
+                    ));
                 }
             }
         }
