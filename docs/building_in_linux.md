@@ -11,25 +11,39 @@ If you're new to building on Linux, start here. These simple commands work for m
 ### 1. Install Basic Dependencies
 
 ```bash
-# Ubuntu/Debian
+# Linux Mint 22.x / Ubuntu 24.04
 sudo apt update
-sudo apt install build-essential cmake git
+sudo apt install -y build-essential cmake curl file git libappindicator3-dev \
+  libasound2-dev libfuse2t64 libjavascriptcoregtk-4.1-dev libopenblas-dev \
+  librsvg2-dev libwebkit2gtk-4.1-dev patchelf pkg-config
+curl -fsSL https://get.pnpm.io/install.sh | sh -
+curl https://sh.rustup.rs -sSf | sh -s -- -y
 
-# Fedora/RHEL
-sudo dnf install gcc-c++ cmake git
-
-# Arch Linux
-sudo pacman -S base-devel cmake git
+# Linux Mint 21.x / Ubuntu 22.04
+sudo apt update
+sudo apt install -y build-essential cmake curl file git libappindicator3-dev \
+  libasound2-dev libfuse2 libjavascriptcoregtk-4.1-dev libopenblas-dev \
+  librsvg2-dev libwebkit2gtk-4.1-dev patchelf pkg-config
+curl -fsSL https://get.pnpm.io/install.sh | sh -
+curl https://sh.rustup.rs -sSf | sh -s -- -y
 ```
 
-### 2. Build and Run
+Then start a fresh shell, or run `source ~/.cargo/env` and reload your shell rc file, so `cargo`, `rustc`, and `pnpm` are on `PATH`.
+
+### 2. Install JavaScript Dependencies
+
+```bash
+pnpm install --dir frontend
+```
+
+### 3. Build and Run
 
 ```bash
 # Development mode (with hot reload)
-./dev-gpu.sh
+./frontend/dev-gpu.sh
 
 # Production build
-./build-gpu.sh
+./frontend/build-gpu.sh
 ```
 
 **That's it!** The scripts automatically detect your GPU and configure acceleration.
@@ -46,7 +60,7 @@ sudo pacman -S base-devel cmake git
 
 ## 🧠 Understanding Auto-Detection
 
-The build scripts (`dev-gpu.sh` and `build-gpu.sh`) orchestrate the entire build process. They first call `scripts/auto-detect-gpu.js` to identify your hardware, then build the `llama-helper` sidecar with the appropriate features, and finally launch the Tauri application.
+The build scripts (`frontend/dev-gpu.sh` and `frontend/build-gpu.sh`) orchestrate the entire build process. They first call `scripts/auto-detect-gpu.js` to identify your hardware, then run `frontend/scripts/prepare-llama-helper-sidecar.sh` to build and stage the `llama-helper` sidecar into `frontend/src-tauri/binaries/`, and finally launch the Tauri application.
 
 ### Detection Priority
 
@@ -102,7 +116,7 @@ nvcc --version      # Shows CUDA version
 CMAKE_CUDA_ARCHITECTURES=75 \
 CMAKE_CUDA_STANDARD=17 \
 CMAKE_POSITION_INDEPENDENT_CODE=ON \
-./build-gpu.sh
+./frontend/build-gpu.sh
 ```
 
 > 💡 **Finding Your Compute Capability:**
@@ -152,7 +166,7 @@ source ~/.bashrc
 #### Step 3: Build
 
 ```bash
-./build-gpu.sh
+./frontend/build-gpu.sh
 ```
 
 The script will automatically detect Vulkan and build with `--features vulkan`.
@@ -189,32 +203,34 @@ Want to force a specific acceleration method? Use the `TAURI_GPU_FEATURE` enviro
 
 ```bash
 # Force CUDA (ignore auto-detection)
-TAURI_GPU_FEATURE=cuda ./dev-gpu.sh
-TAURI_GPU_FEATURE=cuda ./build-gpu.sh
+TAURI_GPU_FEATURE=cuda ./frontend/dev-gpu.sh
+TAURI_GPU_FEATURE=cuda ./frontend/build-gpu.sh
 
 # Force Vulkan
-TAURI_GPU_FEATURE=vulkan ./dev-gpu.sh
-TAURI_GPU_FEATURE=vulkan ./build-gpu.sh
+TAURI_GPU_FEATURE=vulkan ./frontend/dev-gpu.sh
+TAURI_GPU_FEATURE=vulkan ./frontend/build-gpu.sh
 
 # Force ROCm (HIPBlas)
-TAURI_GPU_FEATURE=hipblas ./dev-gpu.sh
-TAURI_GPU_FEATURE=hipblas ./build-gpu.sh
+TAURI_GPU_FEATURE=hipblas ./frontend/dev-gpu.sh
+TAURI_GPU_FEATURE=hipblas ./frontend/build-gpu.sh
 
 # Force CPU-only (for testing)
-TAURI_GPU_FEATURE="" ./dev-gpu.sh
-TAURI_GPU_FEATURE="" ./build-gpu.sh
+TAURI_GPU_FEATURE=none ./frontend/dev-gpu.sh
+TAURI_GPU_FEATURE=none ./frontend/build-gpu.sh
 
 # Force OpenBLAS (CPU-optimized)
-TAURI_GPU_FEATURE=openblas ./dev-gpu.sh
-TAURI_GPU_FEATURE=openblas ./build-gpu.sh
+TAURI_GPU_FEATURE=openblas ./frontend/dev-gpu.sh
+TAURI_GPU_FEATURE=openblas ./frontend/build-gpu.sh
 ```
 
 ### Build Output Location
 
 After successful build:
 
-```
-src-tauri/target/release/bundle/appimage/Meetily_<version>_amd64.AppImage
+```text
+# from repo root
+./target/release/bundle/appimage/meetily_<version>_amd64.AppImage
+./target/release/bundle/deb/meetily_<version>_amd64.deb
 ```
 
 ---
@@ -235,6 +251,11 @@ src-tauri/target/release/bundle/appimage/Meetily_<version>_amd64.AppImage
   export BLAS_INCLUDE_DIRS=/usr/include/x86_64-linux-gnu
   ```
 
+### "`cargo check -p meetily` says llama-helper is missing"
+
+- **Fix:** Run `./frontend/scripts/prepare-llama-helper-sidecar.sh debug`
+- **Why:** Linux packaging and some local checks expect `frontend/src-tauri/binaries/llama-helper-<target-triple>` to exist
+
 ### "AppImage build stripping symbols"
 
 - **Fix:** Already handled! `build-gpu.sh` sets `NO_STRIP=true` automatically
@@ -245,6 +266,11 @@ src-tauri/target/release/bundle/appimage/Meetily_<version>_amd64.AppImage
 - **Check detection:** Look at the build output for GPU detection messages
 - **Verify:** `nvidia-smi` (NVIDIA) or `rocm-smi` (AMD) should work
 - **Missing SDK:** Install the development toolkit, not just drivers
+
+### CI note for forks
+
+- Fork CI can build `.deb` and `AppImage` artifacts with `sign-build=false`
+- Signed updater artifacts still require the Tauri signing secrets
 
 ---
 
