@@ -1,6 +1,6 @@
 use anyhow::Result;
 use cpal::traits::{DeviceTrait, StreamTrait};
-use cpal::{Device, Stream, SupportedStreamConfig};
+use cpal::{BufferSize, Device, Stream, StreamConfig, SupportedBufferSize, SupportedStreamConfig};
 use log::{error, info, warn};
 use std::sync::Arc;
 use tokio::sync::mpsc;
@@ -161,7 +161,7 @@ impl AudioStream {
         );
 
         // Build the appropriate stream based on sample format
-        let stream = Self::build_stream(&cpal_device, &config, capture.clone())?;
+        let stream = Self::build_stream(device.as_ref(), &cpal_device, &config, capture.clone())?;
 
         // Start the stream
         stream.play()?;
@@ -340,19 +340,93 @@ impl AudioStream {
         })
     }
 
+    #[cfg(target_os = "linux")]
+    fn linux_buffer_override_frames() -> Option<u32> {
+        match std::env::var("MEETILY_LINUX_BUFFER_FRAMES") {
+            Ok(value) => match value.trim().parse::<u32>() {
+                Ok(parsed) if parsed > 0 => Some(parsed),
+                Ok(_) => {
+                    warn!(
+                        "Ignoring MEETILY_LINUX_BUFFER_FRAMES='{}' because it must be greater than 0",
+                        value
+                    );
+                    None
+                }
+                Err(err) => {
+                    warn!(
+                        "Ignoring MEETILY_LINUX_BUFFER_FRAMES='{}' because it is not a valid frame count: {}",
+                        value, err
+                    );
+                    None
+                }
+            },
+            Err(_) => None,
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    fn clamp_linux_buffer_frames(
+        requested_frames: u32,
+        supported_buffer: &SupportedBufferSize,
+    ) -> u32 {
+        match supported_buffer {
+            SupportedBufferSize::Range { min, max } => requested_frames.clamp(*min, *max),
+            SupportedBufferSize::Unknown => requested_frames.max(1),
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    fn linux_stream_config(device: &AudioDevice, config: &SupportedStreamConfig) -> StreamConfig {
+        let supported_buffer = *config.buffer_size();
+        let mut stream_config: StreamConfig = config.clone().into();
+
+        if let Some(requested_frames) = Self::linux_buffer_override_frames() {
+            let clamped_frames =
+                Self::clamp_linux_buffer_frames(requested_frames, &supported_buffer);
+            stream_config.buffer_size = BufferSize::Fixed(clamped_frames);
+
+            info!(
+                "🎛️ Linux CPAL stream for '{}' using MEETILY_LINUX_BUFFER_FRAMES={} (clamped to {}), supported buffer range: {:?}",
+                device.name, requested_frames, clamped_frames, supported_buffer
+            );
+        } else {
+            // Keep BufferSize::Default explicitly on Linux so we do not accidentally
+            // start forcing tiny ALSA/PipeWire buffer sizes during future refactors.
+            stream_config.buffer_size = BufferSize::Default;
+
+            info!(
+                "🎛️ Linux CPAL stream for '{}' using BufferSize::Default (supported buffer range: {:?}) to avoid forcing a smaller capture quantum",
+                device.name, supported_buffer
+            );
+        }
+
+        stream_config
+    }
+
     /// Build stream based on sample format
     fn build_stream(
+        audio_device: &AudioDevice,
         device: &Device,
         config: &SupportedStreamConfig,
         capture: AudioCapture,
     ) -> Result<Stream> {
-        let config_copy = config.clone();
+        let stream_config: StreamConfig = {
+            #[cfg(target_os = "linux")]
+            {
+                Self::linux_stream_config(audio_device, config)
+            }
+
+            #[cfg(not(target_os = "linux"))]
+            {
+                config.clone().into()
+            }
+        };
 
         let stream = match config.sample_format() {
             cpal::SampleFormat::F32 => {
                 let capture_clone = capture.clone();
                 device.build_input_stream(
-                    &config_copy.into(),
+                    &stream_config,
                     move |data: &[f32], _: &cpal::InputCallbackInfo| {
                         capture.process_audio_data(data);
                     },
@@ -365,7 +439,7 @@ impl AudioStream {
             cpal::SampleFormat::I16 => {
                 let capture_clone = capture.clone();
                 device.build_input_stream(
-                    &config_copy.into(),
+                    &stream_config,
                     move |data: &[i16], _: &cpal::InputCallbackInfo| {
                         let f32_data: Vec<f32> = data
                             .iter()
@@ -382,7 +456,7 @@ impl AudioStream {
             cpal::SampleFormat::I32 => {
                 let capture_clone = capture.clone();
                 device.build_input_stream(
-                    &config_copy.into(),
+                    &stream_config,
                     move |data: &[i32], _: &cpal::InputCallbackInfo| {
                         let f32_data: Vec<f32> = data
                             .iter()
@@ -399,7 +473,7 @@ impl AudioStream {
             cpal::SampleFormat::I8 => {
                 let capture_clone = capture.clone();
                 device.build_input_stream(
-                    &config_copy.into(),
+                    &stream_config,
                     move |data: &[i8], _: &cpal::InputCallbackInfo| {
                         let f32_data: Vec<f32> = data
                             .iter()
@@ -619,5 +693,38 @@ impl Drop for AudioStreamManager {
         if let Err(e) = self.stop_streams() {
             error!("Error stopping streams during drop: {}", e);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn linux_clamps_buffer_override_to_supported_range() {
+        let supported = SupportedBufferSize::Range {
+            min: 256,
+            max: 2048,
+        };
+
+        assert_eq!(AudioStream::clamp_linux_buffer_frames(128, &supported), 256);
+        assert_eq!(
+            AudioStream::clamp_linux_buffer_frames(1024, &supported),
+            1024
+        );
+        assert_eq!(
+            AudioStream::clamp_linux_buffer_frames(4096, &supported),
+            2048
+        );
+    }
+
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn linux_preserves_requested_buffer_when_supported_range_is_unknown() {
+        assert_eq!(
+            AudioStream::clamp_linux_buffer_frames(4096, &SupportedBufferSize::Unknown),
+            4096
+        );
     }
 }
