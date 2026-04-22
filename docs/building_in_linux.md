@@ -1,12 +1,12 @@
 ## 🐧 Building on Linux
 
-This guide helps you build Meetily on Linux with **automatic GPU acceleration**. The build system detects your hardware and configures the best performance automatically.
+This guide covers Mint 22.x (Ubuntu 24.04 base) and Mint 21.x (Ubuntu 22.04 base). The Linux scripts keep CPU fallback intact, and enable CUDA automatically when the NVIDIA toolchain is present.
 
 ---
 
 ## 🚀 Quick Start (Recommended for Beginners)
 
-If you're new to building on Linux, start here. These simple commands work for most users:
+If you're new to building on Linux Mint, start here.
 
 ### 1. Install Basic Dependencies
 
@@ -26,6 +26,9 @@ sudo apt install -y build-essential cmake curl file git libappindicator3-dev \
   librsvg2-dev libwebkit2gtk-4.1-dev patchelf pkg-config
 curl -fsSL https://get.pnpm.io/install.sh | sh -
 curl https://sh.rustup.rs -sSf | sh -s -- -y
+
+# Optional: NVIDIA CUDA acceleration
+sudo apt install -y nvidia-cuda-toolkit
 ```
 
 Then start a fresh shell, or run `source ~/.cargo/env` and reload your shell rc file, so `cargo`, `rustc`, and `pnpm` are on `PATH`.
@@ -39,28 +42,30 @@ pnpm install --dir frontend
 ### 3. Build and Run
 
 ```bash
-# Development mode (with hot reload)
+# From the repo root
 ./frontend/dev-gpu.sh
 
 # Production build
 ./frontend/build-gpu.sh
 ```
 
-**That's it!** The scripts automatically detect your GPU and configure acceleration.
+**That's it.**
 
 ### What Happens Automatically?
 
-- ✅ **NVIDIA GPU** → CUDA acceleration (if toolkit installed)
-- ✅ **AMD GPU** → ROCm acceleration (if ROCm installed)
-- ✅ **No GPU** → Optimized CPU mode (still works great!)
+- ✅ **NVIDIA GPU + CUDA toolkit** → CUDA acceleration
+- ✅ **NVIDIA driver only** → CPU fallback
+- ✅ **No GPU SDK** → CPU fallback
 
-> 💡 **Tip:** If you have an NVIDIA or AMD GPU but want better performance, jump to the [GPU Setup](#-gpu-setup-guides-intermediate) section below.
+> 💡 Drivers alone are not enough for CUDA builds. You need a CUDA toolkit (`nvcc` or `CUDA_PATH`).
+
+> 💡 If you already know your CUDA architecture, you can still override it with `CMAKE_CUDA_ARCHITECTURES`.
 
 ---
 
 ## 🧠 Understanding Auto-Detection
 
-The build scripts (`frontend/dev-gpu.sh` and `frontend/build-gpu.sh`) orchestrate the entire build process. They first call `scripts/auto-detect-gpu.js` to identify your hardware, then run `frontend/scripts/prepare-llama-helper-sidecar.sh` to build and stage the `llama-helper` sidecar into `frontend/src-tauri/binaries/`, and finally launch the Tauri application.
+The build scripts (`./frontend/dev-gpu.sh` and `./frontend/build-gpu.sh`) orchestrate the entire build process. They call `scripts/auto-detect-gpu.js` for the feature flag, run `frontend/scripts/prepare-llama-helper-sidecar.sh` to build and stage the `llama-helper` sidecar into `frontend/src-tauri/binaries/`, and then let `scripts/tauri-auto.js` resolve CUDA architecture details when CUDA is selected.
 
 ### Detection Priority
 
@@ -76,12 +81,12 @@ The build scripts (`frontend/dev-gpu.sh` and `frontend/build-gpu.sh`) orchestrat
 
 | Your System               | Auto-Detection Result       | Why                          |
 | ------------------------- | --------------------------- | ---------------------------- |
-| Clean Linux install       | CPU-only                    | No GPU SDK detected          |
-| NVIDIA GPU + drivers only | CPU-only                    | CUDA toolkit not installed   |
+| Clean Linux Mint install  | CPU-only                    | No GPU SDK detected          |
+| NVIDIA driver only        | CPU-only                    | CUDA toolkit not installed   |
 | NVIDIA GPU + CUDA toolkit | **CUDA acceleration** ✅    | Full detection successful    |
 | AMD GPU + ROCm            | **HIPBlas acceleration** ✅ | Full detection successful    |
-| Vulkan drivers only       | CPU-only                    | Vulkan SDK + env vars needed |
 | Vulkan SDK configured     | **Vulkan acceleration** ✅  | All requirements met         |
+| CPU-only machine          | CPU fallback                | Still fully supported        |
 
 > 💡 **Key Insight:** Having GPU drivers alone isn't enough. You need the **development SDK** (CUDA toolkit, ROCm, or Vulkan SDK) for acceleration.
 
@@ -93,45 +98,47 @@ Want better performance? Follow these guides to enable GPU acceleration.
 
 ### 🟢 NVIDIA CUDA Setup
 
-**Prerequisites:** NVIDIA GPU with compute capability 5.0+ (check: `nvidia-smi --query-gpu=compute_cap --format=csv`)
+**Prerequisites:**
+- NVIDIA GPU with a CUDA-capable driver
+- CUDA toolkit (`nvcc` or `CUDA_PATH`)
+- Compute capability 5.0+ is a good floor for current support
 
 #### Step 1: Install CUDA Toolkit
 
 ```bash
-# Ubuntu/Debian (CUDA 12.x)
+# Ubuntu / Linux Mint
 sudo apt install nvidia-driver-550 nvidia-cuda-toolkit
 
 # Verify installation
-nvidia-smi          # Shows GPU info
-nvcc --version      # Shows CUDA version
+nvidia-smi          # Shows GPU + driver info
+nvcc --version      # Shows CUDA toolkit version
 ```
 
 #### Step 2: Build with CUDA
 
-```bash
-# Set your GPU's compute capability
-# Example: RTX 3080 = 8.6 → use "86"
-# Example: GTX 1080 = 6.1 → use "61"
+The build scripts now resolve `CMAKE_CUDA_ARCHITECTURES` automatically on Linux when CUDA is selected.
 
-CMAKE_CUDA_ARCHITECTURES=75 \
-CMAKE_CUDA_STANDARD=17 \
-CMAKE_POSITION_INDEPENDENT_CODE=ON \
+```bash
+# Use the detected GPU architecture(s)
 ./frontend/build-gpu.sh
+
+# Or override explicitly for a known target
+CMAKE_CUDA_ARCHITECTURES=86 ./frontend/build-gpu.sh
 ```
 
 > 💡 **Finding Your Compute Capability:**
 >
 > ```bash
-> nvidia-smi --query-gpu=compute_cap --format=csv
+> nvidia-smi --query-gpu=compute_cap --format=csv,noheader
 > ```
 >
-> Convert `7.5` → `75`, `8.6` → `86`, etc.
+> Example conversions: `7.5` → `75`, `8.6` → `86`, `9.0` → `90`.
 
 **Why these flags?**
 
-- `CMAKE_CUDA_ARCHITECTURES`: Optimizes for your specific GPU
+- `CMAKE_CUDA_ARCHITECTURES`: Match the NVIDIA GPU(s) you are building for
 - `CMAKE_CUDA_STANDARD=17`: Ensures C++17 compatibility
-- `CMAKE_POSITION_INDEPENDENT_CODE=ON`: Fixes linking issues on modern systems
+- `CMAKE_POSITION_INDEPENDENT_CODE=ON`: Helps modern Linux linkers
 
 ---
 
@@ -199,12 +206,15 @@ hipcc --version     # Shows ROCm version
 
 ### Manual Feature Override
 
-Want to force a specific acceleration method? Use the `TAURI_GPU_FEATURE` environment variable with the shell scripts:
+Want to force a specific acceleration method? Use the `TAURI_GPU_FEATURE` environment variable with the shell scripts.
 
 ```bash
 # Force CUDA (ignore auto-detection)
 TAURI_GPU_FEATURE=cuda ./frontend/dev-gpu.sh
 TAURI_GPU_FEATURE=cuda ./frontend/build-gpu.sh
+
+# Force a specific CUDA arch list
+CMAKE_CUDA_ARCHITECTURES="75;86" ./build-gpu.sh
 
 # Force Vulkan
 TAURI_GPU_FEATURE=vulkan ./frontend/dev-gpu.sh
@@ -215,8 +225,8 @@ TAURI_GPU_FEATURE=hipblas ./frontend/dev-gpu.sh
 TAURI_GPU_FEATURE=hipblas ./frontend/build-gpu.sh
 
 # Force CPU-only (for testing)
-TAURI_GPU_FEATURE=none ./frontend/dev-gpu.sh
-TAURI_GPU_FEATURE=none ./frontend/build-gpu.sh
+TAURI_GPU_FEATURE="" ./frontend/dev-gpu.sh
+TAURI_GPU_FEATURE="" ./frontend/build-gpu.sh
 
 # Force OpenBLAS (CPU-optimized)
 TAURI_GPU_FEATURE=openblas ./frontend/dev-gpu.sh
@@ -239,8 +249,9 @@ After successful build:
 
 ### "CUDA toolkit not found"
 
-- **Fix:** Install `nvidia-cuda-toolkit` or set `CUDA_PATH` environment variable
+- **Fix:** Install `nvidia-cuda-toolkit` or set `CUDA_PATH` to a valid CUDA install
 - **Check:** `nvcc --version` should work
+- **Note:** `nvidia-smi` alone only proves the driver is present, not the toolkit
 
 ### "Vulkan detected but missing dependencies"
 
@@ -266,6 +277,7 @@ After successful build:
 - **Check detection:** Look at the build output for GPU detection messages
 - **Verify:** `nvidia-smi` (NVIDIA) or `rocm-smi` (AMD) should work
 - **Missing SDK:** Install the development toolkit, not just drivers
+- **Override:** Set `TAURI_GPU_FEATURE=cuda` and `CMAKE_CUDA_ARCHITECTURES` if auto-detection picked CPU fallback unexpectedly
 
 ### CI note for forks
 
@@ -305,7 +317,7 @@ Both `dev-gpu.sh` and `build-gpu.sh` work the same way:
 | `ROCM_PATH`                       | ROCm installation directory         | `/opt/rocm`                     |
 | `VULKAN_SDK`                      | Vulkan SDK directory                | `/usr`                          |
 | `BLAS_INCLUDE_DIRS`               | BLAS headers location               | `/usr/include/x86_64-linux-gnu` |
-| `CMAKE_CUDA_ARCHITECTURES`        | GPU compute capability              | `75` (for compute 7.5)          |
+| `CMAKE_CUDA_ARCHITECTURES`        | CUDA GPU arch list                 | Auto-detected or overridden     |
 | `CMAKE_CUDA_STANDARD`             | C++ standard for CUDA               | `17`                            |
 | `CMAKE_POSITION_INDEPENDENT_CODE` | Enable PIC for linking              | `ON`                            |
 | `NO_STRIP`                        | Prevent symbol stripping (AppImage) | `true`                          |
@@ -321,13 +333,14 @@ Both `dev-gpu.sh` and `build-gpu.sh` work the same way:
 sudo apt install nvidia-driver-550 nvidia-cuda-toolkit
 
 # Verify
-nvidia-smi --query-gpu=compute_cap --format=csv
+nvidia-smi --query-gpu=compute_cap --format=csv,noheader
+nvcc --version
 
-# Build (adjust architecture for your GPU)
-CMAKE_CUDA_ARCHITECTURES=86 \ # (86 may change in your case)
-CMAKE_CUDA_STANDARD=17 \
-CMAKE_POSITION_INDEPENDENT_CODE=ON \
+# Build
 ./build-gpu.sh
+
+# Optional: pin a specific CUDA arch list
+CMAKE_CUDA_ARCHITECTURES=86 ./build-gpu.sh
 ```
 
 ### AMD GPU (ROCm)

@@ -1,57 +1,63 @@
 # GPU Acceleration Guide
 
-Meetily supports GPU acceleration for transcription, which can significantly improve performance. This guide provides detailed information on how to set up and configure GPU acceleration for your system.
+Meetily supports GPU acceleration for transcription, with CPU fallback preserved for every platform.
 
 ## Supported Backends
 
-Meetily uses the `whisper-rs` library, which supports several GPU acceleration backends:
+- CUDA, for NVIDIA GPUs
+- Metal, for Apple Silicon and Macs with Metal support
+- Core ML, for Apple Silicon
+- Vulkan, for cross-platform GPU support
+- OpenBLAS, for CPU optimization
 
-*   **CUDA:** For NVIDIA GPUs.
-*   **Metal:** For Apple Silicon and modern Intel-based Macs.
-*   **Core ML:** An additional acceleration layer for Apple Silicon.
-*   **Vulkan:** A cross-platform solution for modern AMD and Intel GPUs.
-*   **OpenBLAS:** A CPU-based optimization that can provide a significant speed-up over standard CPU processing.
+## Linux Mint Notes
 
-## Automatic GPU Detection
+On Mint 22.x and Mint 21.x, the NVIDIA build path is real, but it still needs the CUDA toolkit, not just the driver.
 
-The build scripts (`dev-gpu.sh`, `build-gpu.sh`) are designed to automatically detect your GPU and enable the appropriate feature flag during the build process. The detection is handled by the `scripts/auto-detect-gpu.js` script.
+Required for CUDA builds:
+- `nvidia-smi` (driver present)
+- `nvcc` or `CUDA_PATH` (toolkit present)
+- `CMAKE_CUDA_ARCHITECTURES` only if you want to override the detected target arch list
 
-Here's the detection priority:
+If CUDA is not available, the build falls back to CPU mode.
 
-1.  **CUDA (NVIDIA)**
-2.  **Metal (Apple)**
-3.  **Vulkan (AMD/Intel)**
-4.  **OpenBLAS (CPU)**
+## Automatic Detection
 
-If no GPU is detected, the application will fall back to CPU-only processing.
+The Linux build scripts use this flow:
 
-## Manual Configuration
+1. `scripts/auto-detect-gpu.js` chooses the feature flag
+2. `scripts/tauri-auto.js` passes that feature to Tauri
+3. If CUDA is selected on Linux, `CMAKE_CUDA_ARCHITECTURES` is resolved in this order:
+   - existing `CMAKE_CUDA_ARCHITECTURES`
+   - `CUDA_ARCHITECTURES`
+   - detected NVIDIA compute caps from `nvidia-smi`
+   - broad fallback list: `61;70;75;80;86;89;90`
 
-If you want to manually configure the GPU acceleration backend, you can do so by enabling the corresponding feature flag in the `frontend/src-tauri/Cargo.toml` file.
+That keeps one script usable across a broad set of CUDA-capable NVIDIA cards.
 
-For example, to enable CUDA, you would modify the `[features]` section as follows:
+## Manual Overrides
 
-```toml
-[features]
-default = ["cuda"]
+```bash
+# Force CUDA
+TAURI_GPU_FEATURE=cuda ./dev-gpu.sh
+TAURI_GPU_FEATURE=cuda ./build-gpu.sh
 
-# ... other features
+# Pin a CUDA arch list
+CMAKE_CUDA_ARCHITECTURES=86 ./build-gpu.sh
 
-cuda = ["whisper-rs/cuda"]
+# Force CPU-only
+TAURI_GPU_FEATURE="" ./dev-gpu.sh
+TAURI_GPU_FEATURE="" ./build-gpu.sh
 ```
 
-Then, you would build the application using the standard `pnpm tauri:build` command.
+## Linux Requirements Summary
 
-## Platform-Specific Instructions
+- CUDA build: NVIDIA driver + CUDA toolkit
+- Vulkan build: Vulkan SDK + BLAS headers
+- CPU fallback: works without GPU SDKs
 
-### Linux
+## Troubleshooting
 
-For detailed instructions on setting up GPU acceleration on Linux, please refer to the [Linux build instructions](BUILDING.md#--building-on-linux).
-
-### macOS
-
-On macOS, Metal GPU acceleration is enabled by default. No additional configuration is required.
-
-### Windows
-
-To enable GPU acceleration on Windows, you will need to install the appropriate toolkit for your GPU (e.g., the CUDA Toolkit for NVIDIA GPUs) and then build the application with the corresponding feature flag enabled.
+- If `nvidia-smi` works but CUDA does not, install the toolkit.
+- If auto-detection picks CPU mode, check that `nvcc` is on `PATH` or `CUDA_PATH` is set.
+- If you want a specific build target, set `CMAKE_CUDA_ARCHITECTURES` explicitly.

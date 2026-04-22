@@ -106,45 +106,47 @@ Want better performance? Follow these guides to enable GPU acceleration.
 
 #### 🟢 NVIDIA CUDA Setup
 
-**Prerequisites:** NVIDIA GPU with compute capability 5.0+ (check: `nvidia-smi --query-gpu=compute_cap --format=csv`)
+**Prerequisites:**
+- NVIDIA GPU with a CUDA-capable driver
+- CUDA toolkit (`nvcc` or `CUDA_PATH`)
+- Compute capability 5.0+ is a good floor for current support
 
 ##### Step 1: Install CUDA Toolkit
 
 ```bash
-# Ubuntu/Debian (CUDA 12.x)
+# Ubuntu / Linux Mint
 sudo apt install nvidia-driver-550 nvidia-cuda-toolkit
 
 # Verify installation
-nvidia-smi          # Shows GPU info
-nvcc --version      # Shows CUDA version
+nvidia-smi          # Shows GPU + driver info
+nvcc --version      # Shows CUDA toolkit version
 ```
 
 ##### Step 2: Build with CUDA
 
-```bash
-# Set your GPU's compute capability
-# Example: RTX 3080 = 8.6 → use "86"
-# Example: GTX 1080 = 6.1 → use "61"
+The Linux scripts resolve `CMAKE_CUDA_ARCHITECTURES` automatically when CUDA is selected.
 
-CMAKE_CUDA_ARCHITECTURES=75 \
-CMAKE_CUDA_STANDARD=17 \
-CMAKE_POSITION_INDEPENDENT_CODE=ON \
+```bash
+# Use the detected GPU architecture(s)
 ./frontend/build-gpu.sh
+
+# Or override explicitly for a known target
+CMAKE_CUDA_ARCHITECTURES=86 ./frontend/build-gpu.sh
 ```
 
 > 💡 **Finding Your Compute Capability:**
 >
 > ```bash
-> nvidia-smi --query-gpu=compute_cap --format=csv
+> nvidia-smi --query-gpu=compute_cap --format=csv,noheader
 > ```
 >
-> Convert `7.5` → `75`, `8.6` → `86`, etc.
+> Example conversions: `7.5` → `75`, `8.6` → `86`, `9.0` → `90`.
 
 **Why these flags?**
 
-- `CMAKE_CUDA_ARCHITECTURES`: Optimizes for your specific GPU
+- `CMAKE_CUDA_ARCHITECTURES`: Match the NVIDIA GPU(s) you are building for
 - `CMAKE_CUDA_STANDARD=17`: Ensures C++17 compatibility
-- `CMAKE_POSITION_INDEPENDENT_CODE=ON`: Fixes linking issues on modern systems
+- `CMAKE_POSITION_INDEPENDENT_CODE=ON`: Helps modern Linux linkers
 
 ---
 
@@ -212,12 +214,15 @@ hipcc --version     # Shows ROCm version
 
 #### Manual Feature Override
 
-Want to force a specific acceleration method? Use the `TAURI_GPU_FEATURE` environment variable with the shell scripts:
+Want to force a specific acceleration method? Use the `TAURI_GPU_FEATURE` environment variable with the shell scripts.
 
 ```bash
 # Force CUDA (ignore auto-detection)
 TAURI_GPU_FEATURE=cuda ./frontend/dev-gpu.sh
 TAURI_GPU_FEATURE=cuda ./frontend/build-gpu.sh
+
+# Force a specific CUDA arch list
+CMAKE_CUDA_ARCHITECTURES="75;86" ./build-gpu.sh
 
 # Force Vulkan
 TAURI_GPU_FEATURE=vulkan ./frontend/dev-gpu.sh
@@ -228,8 +233,8 @@ TAURI_GPU_FEATURE=hipblas ./frontend/dev-gpu.sh
 TAURI_GPU_FEATURE=hipblas ./frontend/build-gpu.sh
 
 # Force CPU-only (for testing)
-TAURI_GPU_FEATURE=none ./frontend/dev-gpu.sh
-TAURI_GPU_FEATURE=none ./frontend/build-gpu.sh
+TAURI_GPU_FEATURE="" ./frontend/dev-gpu.sh
+TAURI_GPU_FEATURE="" ./frontend/build-gpu.sh
 
 # Force OpenBLAS (CPU-optimized)
 TAURI_GPU_FEATURE=openblas ./frontend/dev-gpu.sh
@@ -252,8 +257,9 @@ After successful build:
 
 #### "CUDA toolkit not found"
 
-- **Fix:** Install `nvidia-cuda-toolkit` or set `CUDA_PATH` environment variable
+- **Fix:** Install `nvidia-cuda-toolkit` or set `CUDA_PATH` to a valid CUDA install
 - **Check:** `nvcc --version` should work
+- **Note:** `nvidia-smi` alone only proves the driver is present, not the toolkit
 
 #### "Vulkan detected but missing dependencies"
 
@@ -279,6 +285,7 @@ After successful build:
 - **Check detection:** Look at the build output for GPU detection messages
 - **Verify:** `nvidia-smi` (NVIDIA) or `rocm-smi` (AMD) should work
 - **Missing SDK:** Install the development toolkit, not just drivers
+- **Override:** Set `TAURI_GPU_FEATURE=cuda` and `CMAKE_CUDA_ARCHITECTURES` if auto-detection picked CPU fallback unexpectedly
 
 #### CI note for forks
 
