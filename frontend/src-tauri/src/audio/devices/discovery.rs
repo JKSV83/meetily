@@ -70,26 +70,29 @@ pub async fn list_audio_devices() -> Result<Vec<AudioDevice>> {
             }
         }
 
-        return Ok(devices);
+        Ok(devices)
     }
 
-    // Add any additional devices from the default host
-    if let Ok(other_devices) = host.devices() {
-        let mut seen: HashSet<(String, DeviceType)> = devices
-            .iter()
-            .map(|device| (device.name.clone(), device.device_type.clone()))
-            .collect();
+    #[cfg(not(target_os = "linux"))]
+    {
+        // Add any additional devices from the default host
+        if let Ok(other_devices) = host.devices() {
+            let mut seen: HashSet<(String, DeviceType)> = devices
+                .iter()
+                .map(|device| (device.name.clone(), device.device_type.clone()))
+                .collect();
 
-        for device in other_devices {
-            if let Ok(name) = device.name() {
-                if !seen.contains(&(name.clone(), DeviceType::Output)) {
-                    push_unique_device(&mut devices, &mut seen, name, DeviceType::Output);
+            for device in other_devices {
+                if let Ok(name) = device.name() {
+                    if !seen.contains(&(name.clone(), DeviceType::Output)) {
+                        push_unique_device(&mut devices, &mut seen, name, DeviceType::Output);
+                    }
                 }
             }
         }
-    }
 
-    Ok(devices)
+        Ok(devices)
+    }
 }
 
 /// Trigger audio permission request on platforms that require it
